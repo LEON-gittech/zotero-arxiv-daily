@@ -12,6 +12,7 @@ from email.header import Header
 from email.mime.text import MIMEText
 from email.utils import parseaddr, formataddr
 import smtplib
+import imaplib
 from tldr import get_paper_tldr
 from llama_cpp import Llama
 from tqdm import tqdm
@@ -112,6 +113,20 @@ def send_email(sender:str, receiver:str, password:str,smtp_server:str,smtp_port:
     server.sendmail(sender, [receiver], msg.as_string())
     server.quit()
 
+def initialize_llm():
+    try:
+        llm = Llama.from_pretrained(
+            repo_id="Qwen/Qwen2.5-3B-Instruct-GGUF",
+            filename="qwen2.5-3b-instruct-q4_k_m.gguf",
+            n_ctx=4096,
+            n_threads=4,
+            verbose=False
+        )
+        return llm
+    except Exception as e:
+        logger.error(f"Failed to initialize LLM: {str(e)}")
+        raise
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Recommender system for academic papers')
     parser.add_argument('--zotero_id', type=str, help='Zotero user ID',default=os.environ.get('ZOTERO_ID'))
@@ -147,15 +162,26 @@ if __name__ == '__main__':
         papers = papers[:args.max_paper_num]
     
     logger.info("Generating TLDRs...")
-    llm = Llama.from_pretrained(
-        repo_id="Qwen/Qwen2.5-3B-Instruct-GGUF",
-        filename="qwen2.5-3b-instruct-q4_k_m.gguf",
-        n_ctx=4096,
-        n_threads=4,
-        verbose=False
-    )
-    for p in tqdm(papers):
-        p.tldr = get_paper_tldr(p, llm)
+    try:
+        llm = initialize_llm()
+        for p in tqdm(papers):
+            try:
+                p.tldr = get_paper_tldr(p, llm)
+            except Exception as e:
+                logger.error(f"Failed to generate TLDR for paper {p.title}: {str(e)}")
+                p.tldr = "Failed to generate TLDR"
+    except Exception as e:
+        logger.error(f"LLM processing failed: {str(e)}")
+        # Continue without TLDRs if LLM fails
+        for p in papers:
+            p.tldr = "TLDR generation unavailable"
+    finally:
+        # Explicitly clean up LLM resources
+        try:
+            if 'llm' in locals():
+                del llm
+        except Exception as e:
+            logger.warning(f"Failed to cleanup LLM: {str(e)}")
 
     html = render_email(papers)
     logger.info("Sending email...")
